@@ -1,0 +1,9 @@
+extends: reliability
+
+experiment:
+  name: reliability_mask
+
+priors:
+  instance_mask:
+    enabled: true
+    integration: null  # TODO: concatenation or feature-level fusion

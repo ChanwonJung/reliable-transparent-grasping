@@ -1,0 +1,15 @@
+extends: base
+
+experiment:
+  name: reliability
+
+model:
+  behavior: proposed
+  reliability_branch:
+    enabled: true
+    target: null  # TODO: relative error / delta / continuous target
+    decoder: null
+
+fusion:
+  mode: reliability_raw_predicted
+  apply_region: null

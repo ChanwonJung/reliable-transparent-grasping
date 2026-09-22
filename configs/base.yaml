@@ -1,0 +1,46 @@
+# Schema proposal only. `extends` will be resolved by a future lightweight loader.
+project:
+  name: reliable-transparent-grasping
+  seed: null  # TODO: choose a reproducibility policy
+
+upstream:
+  swindrnet_commit: null  # TODO: pin before any baseline result
+  checkpoint: null
+
+data:
+  dataset: null
+  split_manifest: null
+  depth_unit: null
+  transparent_mask_source: none
+
+model:
+  family: swindrnet
+  behavior: original
+  depth_prediction_branch: original
+  confidence_branch: original
+  reliability_branch:
+    enabled: false
+    target: null
+    decoder: null
+
+priors:
+  instance_mask:
+    enabled: false
+    integration: null
+  monocular_depth:
+    enabled: false
+    model: null
+    integration: null
+
+fusion:
+  mode: original_confidence
+  apply_region: null
+
+evaluation:
+  metrics: [mae, rmse, rel, delta]
+  regions: [all, transparent_mask, valid_raw, invalid_raw]
+  save_predictions: false
+
+runtime:
+  device: null
+  output_dir: null

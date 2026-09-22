@@ -1,0 +1,18 @@
+extends: base
+
+experiment:
+  name: swindrnet_baseline
+
+model:
+  behavior: original
+  reliability_branch:
+    enabled: false
+
+priors:
+  instance_mask:
+    enabled: false
+  monocular_depth:
+    enabled: false
+
+fusion:
+  mode: original_confidence

@@ -1,0 +1,50 @@
+# Python / deep-learning environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Training artifacts and data (keep metadata / README files only)
+data/**
+!data/README.md
+checkpoints/
+wandb/
+tensorboard/
+mlruns/
+experiments/logs/**
+!experiments/logs/README.md
+experiments/results/**
+!experiments/results/README.md
+*.ckpt
+*.pth
+*.pt
+*.onnx
+
+# External upstream repositories are acquired separately or as submodules
+external/SwinDRNet/
+external/GraspGen/
+
+# ROS 2 build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ROS / editor / OS files
+.ros/
+.vscode/
+.idea/
+*.bag
+*.db3
+.DS_Store
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key

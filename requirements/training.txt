@@ -1,0 +1,2 @@
+# Populate only after the baseline upstream revision and CUDA/PyTorch compatibility are pinned.
+# Keep this independent from ROS 2 packages.

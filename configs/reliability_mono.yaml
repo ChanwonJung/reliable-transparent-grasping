@@ -1,0 +1,10 @@
+extends: reliability
+
+experiment:
+  name: reliability_mono
+
+priors:
+  monocular_depth:
+    enabled: true
+    model: null
+    integration: null  # TODO: concatenation or feature-level fusion

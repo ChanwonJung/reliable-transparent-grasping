@@ -1,0 +1,13 @@
+extends: reliability
+
+experiment:
+  name: reliability_mask_mono
+
+priors:
+  instance_mask:
+    enabled: true
+    integration: null
+  monocular_depth:
+    enabled: true
+    model: null
+    integration: null
