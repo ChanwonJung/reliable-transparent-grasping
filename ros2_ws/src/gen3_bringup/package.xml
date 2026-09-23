@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.ros.org/wiki/xmlschema"?>
+<package format="3">
+  <name>gen3_bringup</name>
+  <version>0.0.1</version>
+  <description>
+    Project launch composition for the real Kinova Gen3 Lite. Owns the combined
+    robot description (arm + gripper + wrist-mounted RealSense D435i) built on
+    top of the external kortex_description driver package; does not fork or
+    duplicate that driver.
+  </description>
+  <maintainer email="hyper.robotics.khu@gmail.com">Jaewon Heo</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>kortex_description</exec_depend>
+  <exec_depend>realsense2_description</exec_depend>
+  <exec_depend>kinova_gen3_lite_moveit_config</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+
+<!--
+  SRDF overlay for gen3_lite_d435i.xacro: includes the vendored Gen3 Lite
+  SRDF unmodified, then disables self-collision checking between the D435i
+  (camera_link, the only camera link with real collision geometry; the
+  bottom_screw_frame link is a bare empty reference frame) and the gripper
+  links it sits rigidly mounted against.
+
+  Without this, MoveIt reports START_STATE_IN_COLLISION at the arm's default
+  pose (confirmed via /check_state_validity: camera_link overlaps
+  gripper_base_link and left_finger_prox_link by <1mm at the current
+  placeholder mount offset). A permanently-mounted rigid accessory should be
+  treated the same way the vendor SRDF treats its own adjacent links
+  (reason="Adjacent"), not relied on to clear by geometric margin alone;
+  the real, measured mount offset will still put it just as close.
+-->
+<robot name="gen3_lite_gen3_lite_2f" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find kinova_gen3_lite_moveit_config)/config/gen3_lite.srdf" />
+
+  <disable_collisions link1="camera_link" link2="gripper_base_link" reason="Adjacent"/>
+  <disable_collisions link1="camera_link" link2="left_finger_prox_link" reason="Adjacent"/>
+  <disable_collisions link1="camera_link" link2="right_finger_prox_link" reason="Adjacent"/>
+  <disable_collisions link1="camera_link" link2="upper_wrist_link" reason="Adjacent"/>
+  <disable_collisions link1="camera_link" link2="end_effector_link" reason="Adjacent"/>
+
+</robot>

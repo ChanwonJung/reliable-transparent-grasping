@@ -5,8 +5,9 @@ Its caller will provide arrays/tensors with identical spatial alignment and a me
 adapter. The validity and tie-breaking policies must be recorded in the resolved config.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)

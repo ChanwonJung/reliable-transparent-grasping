@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+
+<!--
+  Combined robot description for the real hardware: the vendored Gen3 Lite +
+  gen3_lite_2f gripper description from kortex_description, plus a
+  wrist-mounted RealSense D435i added on top (use_mesh:=false -> plain box
+  geometry, not the aluminum-case mesh). kortex_description itself is not
+  edited or forked; this file only adds a sibling link off the gripper's
+  mount point.
+
+  Frame chain added: camera_link, camera_color_frame(+_optical_frame),
+  camera_depth_frame(+_optical_frame), matching the RealSense driver's own
+  topic/TF convention (see tests/realsense_rgbd.rviz in the repo root).
+-->
+<robot name="gen3_lite_d435i" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Upstream Gen3 Lite + gen3_lite_2f gripper, unmodified. -->
+  <xacro:include filename="$(find kortex_description)/robots/gen3_lite_gen3_lite_2f.xacro" />
+
+  <!-- RealSense D435i, bland-box geometry (use_mesh:=false), mounted on end_effector_link. -->
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435i.urdf.xacro" />
+
+  <!--
+    PLACEHOLDER MOUNT OFFSET, not measured against the real arm yet.
+    Positions the camera body beside the gripper rather than through it;
+    replace both xyz and rpy once the physical mount is in hand, and note
+    that in CLAUDE.local.md / gen3_perception's TF validation per its README.
+  -->
+  <xacro:sensor_d435i
+    parent="end_effector_link"
+    name="camera"
+    use_mesh="false">
+    <origin xyz="0 0.05 0.04" rpy="0 0 0" />
+  </xacro:sensor_d435i>
+
+</robot>

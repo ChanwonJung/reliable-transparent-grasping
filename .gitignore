@@ -48,3 +48,6 @@ ros2_ws/log/
 !.env.example
 *.pem
 *.key
+
+# Personal Claude Code instructions
+CLAUDE.local.md
