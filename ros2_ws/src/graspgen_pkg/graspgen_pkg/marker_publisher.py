@@ -1,0 +1,162 @@
+"""
+marker_publisher.py — RViz MarkerArray builders for grasp candidates.
+
+Namespace 'vgn_grasps' matches the existing rviz config (GraspMarkers display).
+Per-grasp visualization: Franka Panda gripper shape (4 CUBE markers).
+  - left finger / right finger / palm / wrist
+
+Candidate frame convention (as published by graspgen_node):
+  position    = panda_link8 (wrist) — the pose BT sends to MoveIt.
+                The fingertip / grasp center is `tcp_offset` further along
+                the gripper's +Z direction.
+  rotation +Z = approach axis (toward fingertips / object).
+  rotation +X = finger spread direction.
+
+This module adapts those poses to a "fingertip-anchored" geometry: the
+build code computes the fingertip position from the wrist + tcp_offset,
+then lays out the palm and wrist stub back along the -approach direction.
+"""
+from __future__ import annotations
+
+import numpy as np
+from geometry_msgs.msg import Vector3
+from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
+
+_NS = 'vgn_grasps'
+
+# Franka Panda gripper geometry (metres)
+_FINGER_LEN = 0.060   # finger length along Z (from fingertip toward palm)
+_FINGER_W   = 0.020   # finger width in X (spread direction)
+_FINGER_D   = 0.018   # finger depth in Y
+
+# Direction the Panda fingers actually slide along, in panda_link8 coordinates.
+# panda_hand sits on panda_link8 rotated Rz(-45deg) and the prismatic finger
+# joints move along panda_hand's +Y, which is this diagonal in link8 — not +X.
+_PANDA_FINGER_AXIS = (0.7071067811865476, 0.7071067811865476, 0.0)
+_PALM_LEN   = 0.028   # palm thickness in Z
+_WRIST_LEN  = 0.030   # wrist stub thickness in Z
+
+
+def _cube(frame, stamp, mid, center, quat, sx, sy, sz, color):
+    m = Marker()
+    m.header.frame_id     = frame
+    m.header.stamp        = stamp
+    m.ns                  = _NS
+    m.id                  = mid
+    m.type                = Marker.CUBE
+    m.action              = Marker.ADD
+    m.pose.position.x     = float(center[0])
+    m.pose.position.y     = float(center[1])
+    m.pose.position.z     = float(center[2])
+    m.pose.orientation.x  = float(quat[0])
+    m.pose.orientation.y  = float(quat[1])
+    m.pose.orientation.z  = float(quat[2])
+    m.pose.orientation.w  = float(quat[3])
+    m.scale               = Vector3(x=float(sx), y=float(sy), z=float(sz))
+    m.color               = color
+    return m
+
+
+def build_grasp_markers(
+    candidates: list[dict],
+    frame: str,
+    stamp,
+    gripper_width: float,
+    tcp_offset: float = 0.103,
+) -> tuple[MarkerArray, MarkerArray]:
+    """Build (clear_ma, markers_ma) for publishing to /grasp_markers.
+
+    `tcp_offset` (m) is the panda_link8 → fingertip distance along +Z and
+    must match graspgen_node's `panda_link8_offset` parameter. Used to
+    place the fingertip marker at the actual grasp center while the wrist
+    stub sits at the published `panda_link8` pose.
+
+    Returns a DELETEALL MarkerArray first, then the populated one so the
+    caller can publish both in sequence to avoid stale markers.
+    """
+    from scipy.spatial.transform import Rotation as Rot
+
+    clear_m              = Marker()
+    clear_m.header.frame_id = frame
+    clear_m.header.stamp    = stamp
+    clear_m.ns              = _NS
+    clear_m.action          = Marker.DELETEALL
+    clear_ma                = MarkerArray(markers=[clear_m])
+
+    markers: list[Marker] = []
+    for i, c in enumerate(candidates):
+        q     = float(c['quality'])
+        color = ColorRGBA(r=0.0, g=max(0.0, min(1.0, 0.6 * q)), b=1.0, a=0.85)
+
+        wrist_pos = np.array(c['position'], dtype=float)   # panda_link8
+        quat      = np.array(c['quaternion'], dtype=float) # [qx, qy, qz, qw]
+        rot       = Rot.from_quat(quat)
+        width     = float(c.get('width', gripper_width))
+
+        # Gripper frame axes in world frame
+        approach_vec = rot.apply([0.0, 0.0, 1.0])          # +Z = toward object
+        back_vec     = -approach_vec                       # -Z = toward wrist
+        # Finger spread is NOT the frame's +X on a Panda. panda_hand is
+        # mounted on panda_link8 with Rz(-45deg) and the fingers slide along
+        # panda_hand's +Y, so in panda_link8 coordinates they slide along
+        # (0.7071, 0.7071, 0). Drawing them along +X made the marker look
+        # 45deg off from the real gripper — RViz showed a grasp neatly aligned
+        # with the book while the actual jaws came in across its long side.
+        x_vec        = rot.apply(_PANDA_FINGER_AXIS)       # finger spread
+
+        # Fingertips at the actual grasp center: wrist + tcp_offset along
+        # approach. The wrist marker stays at `wrist_pos` (= panda_link8).
+        pos = wrist_pos + approach_vec * tcp_offset
+
+        # Finger geometry: fingertips at `pos`, extending back toward wrist.
+        finger_offset_x = x_vec * (width / 2 + _FINGER_W / 2)
+        finger_center_z = back_vec * (_FINGER_LEN / 2)
+        left_center  = pos + finger_center_z + finger_offset_x
+        right_center = pos + finger_center_z - finger_offset_x
+
+        # Palm sits behind the fingers, further toward the wrist.
+        palm_w      = width + 2 * _FINGER_W
+        palm_center = pos + back_vec * (_FINGER_LEN + _PALM_LEN / 2)
+
+        # Wrist stub — drawn around the published panda_link8 origin so
+        # what RViz shows matches the goal BT actually sends to MoveIt.
+        wrist_center = wrist_pos
+
+        base = i * 4
+        # scale: (X=finger-spread, Y=depth, Z=along-approach) — matches gripper orientation
+        markers.append(_cube(frame, stamp, base + 1,
+                             left_center,  quat, _FINGER_W, _FINGER_D, _FINGER_LEN, color))
+        markers.append(_cube(frame, stamp, base + 2,
+                             right_center, quat, _FINGER_W, _FINGER_D, _FINGER_LEN, color))
+        markers.append(_cube(frame, stamp, base + 3,
+                             palm_center,  quat, palm_w, _FINGER_D, _PALM_LEN, color))
+        markers.append(_cube(frame, stamp, base + 4,
+                             wrist_center, quat, 0.040, _FINGER_D + 0.010, _WRIST_LEN,
+                             ColorRGBA(r=0.0, g=max(0.0, min(1.0, 0.6 * q)), b=1.0, a=0.5)))
+
+    markers_ma         = MarkerArray()
+    markers_ma.markers = markers
+    return clear_ma, markers_ma
+
+
+def build_target_cloud_msg(pts: np.ndarray, frame_id: str, stamp) -> PointCloud2:
+    """Build a minimal XYZ-only PointCloud2 for /graspgen/target_cloud debug topic."""
+    data                = pts.astype(np.float32).tobytes()
+    msg                 = PointCloud2()
+    msg.header.stamp    = stamp
+    msg.header.frame_id = frame_id
+    msg.height          = 1
+    msg.width           = len(pts)
+    msg.is_dense        = True
+    msg.is_bigendian    = False
+    msg.point_step      = 12
+    msg.row_step        = 12 * len(pts)
+    msg.fields          = [
+        PointField(name='x', offset=0,  datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4,  datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
+    ]
+    msg.data = data
+    return msg

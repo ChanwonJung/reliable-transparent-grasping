@@ -1,0 +1,52 @@
+# camera_extrinsics.yaml
+#
+# Camera optical-frame → ROS world-frame (= panda_link0) transforms for
+# multi_view_projector_node.
+#
+# Convention:
+#   p_world = R @ p_cam + t
+#
+#   p_cam  : 3D point in ROS camera optical frame (back_projection.py output)
+#            optical frame: +Z forward (depth), +X right, +Y down
+#   R (3x3): rotation from camera optical frame to world frame
+#   t (3,) : camera optical centre position in world frame (metres)
+#
+# IMPORTANT — frame distinction:
+#   ROS "world" frame = panda_link0 (per panda_isaac_moveit.launch.py
+#   static_transform_publisher with all-zero translation/rotation).
+#   USD "World" frame is NOT the same: in this Isaac Sim scene, panda_link0
+#   sits at USD (0, -0.64, 0) with a 90° Z-rotation. Camera transforms must
+#   be expressed in ROS world to match the rest of the pipeline.
+#
+# Slow Brain note: grounded-SAM observes only at the start pose, so static
+# R/t captures the EE camera world transform AT THAT POSE. If the start pose
+# changes, regenerate these values.
+#
+# Source: Isaac Sim USD ComputeLocalToWorldTransform on the EE/Top camera
+# prims AND on /Franka/panda_link0 (Script Editor dump), then transformed
+# from USD world into panda_link0 frame via:
+#   R_optical_in_link0 = R_link0^T @ R_usdcam_in_USD @ diag(1, -1, -1)
+#   t_in_link0         = R_link0^T @ (t_usdcam_in_USD - t_link0_in_USD)
+# To regenerate, dump:
+#   /Franka/panda_link0
+#   /Franka/panda_hand/EEViewCameraMount/CameraRig/CameraFrame/EEViewCamera
+#   /World/TopViewCamera
+# from Isaac Sim Script Editor, then re-run the conversion.
+
+ee_camera:
+  # USD: t=(0.089,-0.198,0.427)  →  ROS(panda_link0): t=(0.442,-0.089,0.427)
+  t: [0.442155, -0.089153, 0.426938]
+  R:
+    - [ 0.043068, -0.412916,  0.909750]
+    - [-0.998570, -0.046656,  0.026097]
+    - [ 0.031670, -0.909573, -0.414335]
+
+top_camera:
+  # USD: /World/TopViewCamera @ (0, 0.2, 2.0) identity rotation
+  # (shifted +0.2 in USD Y so the panda base sits outside the Top FOV)
+  # ROS(panda_link0): t=(0.84, 0, 2.0)
+  t: [0.840000, 0.000000, 2.000000]
+  R:
+    - [ 0.000000, -1.000000,  0.000000]
+    - [-1.000000,  0.000000,  0.000000]
+    - [ 0.000000,  0.000000, -1.000000]

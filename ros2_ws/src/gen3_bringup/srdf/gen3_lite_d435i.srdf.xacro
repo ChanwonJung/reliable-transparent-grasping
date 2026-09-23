@@ -15,7 +15,9 @@
   (reason="Adjacent"), not relied on to clear by geometric margin alone;
   the real, measured mount offset will still put it just as close.
 -->
-<robot name="gen3_lite_gen3_lite_2f" xmlns:xacro="http://ros.org/wiki/xacro">
+<!-- Must equal the URDF robot name (gen3_lite_d435i) or MoveIt logs
+     "Semantic description is not specified for the same robot as the URDF". -->
+<robot name="gen3_lite_d435i" xmlns:xacro="http://ros.org/wiki/xacro">
 
   <xacro:include filename="$(find kinova_gen3_lite_moveit_config)/config/gen3_lite.srdf" />
 

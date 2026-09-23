@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  move_action_test.xml — 1차 통합 검증용 최소 트리.
+
+  목적: bt_pkg MoveAction → /move_action (move_group) → Gen3 Lite 팔 이동
+        경로만 고립 검증. VGN/YOLO/Qwen/Gripper 전부 불필요.
+
+  트리거: /world_map_result (target centroid 있는 JSON)
+          /grasp_candidates ({"candidates": []} — 빈거)
+  → ParseScene가 candidates 비었으니 centroid fallback 으로
+    아래보는(down-pointing) grasp pose 생성 → MoveAction이 전송.
+
+  실제 통합(1b)에서는 위 두 트리거 publish 자리에
+  g-sam → qwen → mask_projection 체인이 그대로 들어가면 됨.
+
+  실행 (XML 주석에는 double-hyphen 을 쓸 수 없어 launch 인자로 적는다):
+    ros2 launch bt_pkg bt_system.launch.py tree_file:=<이 파일 절대경로>
+-->
+<root BTCPP_format="4">
+  <BehaviorTree ID="MoveActionTest">
+    <Sequence name="world_map_to_moveit">
+      <WaitForScene/>
+      <ParseScene/>
+      <SelectGraspCandidate/>
+      <!-- 물체 위 pre_grasp 까지 이동만 수행 (gripper 제어 없음) -->
+      <MoveAction pose_key="pre_grasp_pose" speed="0.01"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

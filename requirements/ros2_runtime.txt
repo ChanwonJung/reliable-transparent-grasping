@@ -1,0 +1,27 @@
+# Python deps for the ROS 2 perception packages (qwen_server, sam_server,
+# graspgen_pkg, mask_projection_pkg). Installed into this repo's .venv, which
+# environments/ros2/seraph_env.sh puts on PYTHONPATH.
+#
+#     python3 -m venv --system-site-packages .venv
+#     .venv/bin/pip install -r requirements/ros2_runtime.txt
+#
+# --system-site-packages: rclpy, cv_bridge, numpy and cv2 come from apt/ROS and
+# must stay the system builds (cv_bridge is compiled against them). Do not add
+# numpy or opencv here.
+
+# ZMQ + msgpack transport to SAM 2.1 / SwinDRNet / GraspGen on Seraph.
+# msgpack-numpy lets ndarrays cross the wire.
+pyzmq
+msgpack
+msgpack-numpy
+
+# Qwen grounding: OpenAI-compatible client against SGLang on :10000.
+openai
+
+# Reply validation. qwen_schema.py imports under both pydantic majors.
+pydantic
+
+# graspgen_pkg rotations.
+scipy
+
+pyyaml

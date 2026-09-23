@@ -4,9 +4,9 @@
 # gen3_perception's topic/frame contracts (see ROADMAP Phase 7) exist.
 #
 # Usage:
-#   ros2 launch tests/view_realsense_rgbd_launch.py
-#   ros2 launch tests/view_realsense_rgbd_launch.py stream:=depth   # depth only
-#   ros2 launch tests/view_realsense_rgbd_launch.py stream:=color   # color only
+#   ros2 launch demos/view_realsense_rgbd_launch.py
+#   ros2 launch demos/view_realsense_rgbd_launch.py stream:=depth   # depth only
+#   ros2 launch demos/view_realsense_rgbd_launch.py stream:=color   # color only
 #
 # stream:=rgbd (default) enables color + depth + pointcloud. depth/color
 # disable pointcloud and the other image stream — useful for cutting
@@ -14,7 +14,7 @@
 # can't reliably sustain all three streams at once.
 #
 # Adapted from realsense2_camera's bundled rs_pointcloud_launch.py example,
-# pointed at this repo's own RViz config (tests/realsense_rgbd.rviz).
+# pointed at this repo's own RViz config (demos/realsense_rgbd.rviz).
 
 import os
 import sys

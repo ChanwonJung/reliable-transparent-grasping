@@ -1,0 +1,11 @@
+# Overrides on top of the vendored kinova_gen3_lite_moveit_config
+# ros2_controllers.yaml, passed to the matching spawner with --param-file.
+#
+# The controller manager runs at 1 kHz and joint_state_broadcaster inherits
+# that rate, flooding /joint_states (and, through robot_state_publisher, /tf)
+# at ~1000 Hz. Under WSL2 that backs up every consumer — MoveIt Servo and TF
+# listeners fall seconds behind, so servoing moves in delayed jumps. 100 Hz is
+# ample for move_group, Servo and RViz.
+joint_state_broadcaster:
+  ros__parameters:
+    update_rate: 100

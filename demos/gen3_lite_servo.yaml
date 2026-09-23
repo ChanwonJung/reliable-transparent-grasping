@@ -1,0 +1,52 @@
+# MoveIt Servo parameters for the Gen3 Lite drag demo
+# (demos/gen3_lite_servo_drag_launch.py). Loaded under the "moveit_servo"
+# namespace. Schema: /opt/ros/jazzy/share/moveit_servo/config/servo_parameters.yaml
+
+## Outgoing commands
+publish_period: 0.01          # 100 Hz
+max_expected_latency: 0.1
+# Straight to the joint_trajectory_controller that move_group also uses — no
+# controller switch needed. One-point trajectories, POSITIONS ONLY: the Kinova
+# JTC config keeps allow_nonzero_velocity_at_trajectory_end: false, so it
+# REJECTS every one-point trajectory that carries a velocity. With velocities
+# on, the arm stayed put while Servo streamed, Servo kept integrating against
+# an arm that never moved, and the one zero-velocity halt message at the end
+# made the arm jump to wherever Servo had run off to (a singularity).
+command_out_type: trajectory_msgs/JointTrajectory
+command_out_topic: /joint_trajectory_controller/joint_trajectory
+publish_joint_positions: true
+publish_joint_velocities: false
+publish_joint_accelerations: false
+
+## Incoming commands
+command_in_type: "speed_units"
+# The drag marker republishes at 50 Hz; stop within a few missed messages.
+incoming_command_timeout: 0.2
+pose_tracking:
+  linear_tolerance: 0.002      # m — close enough, stop moving
+  angular_tolerance: 0.02      # rad
+
+## Smoothing — Butterworth low-pass (Servo's default).
+# NOT AccelerationLimitedPlugin: with the Kinova joint_limits.yaml accelerations
+# (0.34-0.86 rad/s^2) it cannot brake in time and the arm sailed 15 cm past a
+# 2 cm target. Speed is bounded upstream instead — the drag marker walks the
+# target toward the marker at a capped speed.
+use_smoothing: true
+smoothing_filter_plugin_name: "online_signal_smoothing::ButterworthFilterPlugin"
+
+## MoveIt
+move_group_name: arm           # IK tip / servo EE = tool_frame
+# move_group owns the planning scene; Servo follows its published copy.
+is_primary_planning_scene_monitor: false
+monitored_planning_scene_topic: /monitored_planning_scene
+joint_topic: /joint_states
+
+## Safety
+check_collisions: true
+collision_check_rate: 10.0
+self_collision_proximity_threshold: 0.01
+scene_collision_proximity_threshold: 0.02
+lower_singularity_threshold: 17.0
+hard_stop_singularity_threshold: 30.0
+leaving_singularity_threshold_multiplier: 2.0
+joint_limit_margins: [0.12]

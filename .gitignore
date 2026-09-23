@@ -28,6 +28,7 @@ experiments/results/**
 # External upstream repositories are acquired separately or as submodules
 external/SwinDRNet/
 external/GraspGen/
+ros2_ws/src/external/
 
 # ROS 2 build artifacts
 ros2_ws/build/
@@ -51,3 +52,6 @@ ros2_ws/log/
 
 # Personal Claude Code instructions
 CLAUDE.local.md
+
+# Local scratch notes (session handoffs etc.)
+temp/

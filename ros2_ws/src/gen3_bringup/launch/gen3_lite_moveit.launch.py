@@ -153,7 +153,11 @@ def launch_setup(context, *args, **kwargs):
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        arguments=[
+            "joint_state_broadcaster", "--controller-manager", "/controller_manager",
+            # 100 Hz instead of the controller manager's 1 kHz — see the file.
+            "--param-file", os.path.join(gen3_bringup_share, "config", "controller_overrides.yaml"),
+        ],
     )
 
     delay_rviz_after_joint_state_broadcaster_spawner = RegisterEventHandler(

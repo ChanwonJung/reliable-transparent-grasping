@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-hardware smoke test: nudge the Gen3 Lite outward via MoveIt2, then
 close and open the gripper. Not a project ROS package -- a standalone rclpy
-script, like the other files in tests/.
+script, like the other files in demos/.
 
 "Outward" is computed as a real Cartesian step away from base_link in the
 current horizontal direction of the end effector (tool_frame), not a guessed
@@ -15,7 +15,7 @@ Usage:
   source /opt/ros/jazzy/setup.bash
   source ~/workspace/ros2_kortex_ws/install/setup.bash
   source <this repo>/ros2_ws/install/setup.bash
-  python3 tests/gen3_lite_movement_gripper_test.py [--step-m 0.05] [--velocity-scale 0.1] [--yes]
+  python3 demos/gen3_lite_movement_gripper_test.py [--step-m 0.05] [--velocity-scale 0.1] [--yes]
 
 Prompts for confirmation before moving the real arm unless --yes is passed.
 """

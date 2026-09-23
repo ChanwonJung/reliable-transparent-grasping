@@ -1,0 +1,81 @@
+# qwen_server — Slow Brain grounding parameters.
+#
+# Loading order (later wins): this file -> launch args. (robot_capstone's
+# robot_defaults.yaml is no longer loaded — it carries Isaac/Panda values.)
+#
+# The block below MUST stay keyed `/**`, not `qwen_bridge_node`. robot_defaults
+# is loaded first and is itself `/**`; once a wildcard file has been seen, a
+# node-name-keyed block outranks every later `/**` file — including the one
+# `ros2 launch` generates for its inline overrides. Keying this block by node
+# name therefore silently discards every launch argument whose key also appears
+# here (image_path, instruction, model_name, vllm_endpoint_url, ...): the launch
+# still starts, it just ignores what you passed.
+
+/**:
+  ros__parameters:
+
+    # ── Remote endpoint ──────────────────────────────────────────────────────
+    # Reached through the SSH tunnel opened by environments/ros2/seraph_env.sh:
+    #   localhost:10000 -> aurora-g6:10000 (Seraph, loopback-only)
+    # Same host as SAM 2.1 (20000), SwinDRNet (30000) and GraspGen (40000).
+    vllm_endpoint_url: "http://localhost:10000/v1"
+    # Qwen3.5-27B, registered on the SGLang server under the short id below.
+    # UNVERIFIED on Seraph — "qwen35-local" was the A100 vLLM id; SGLang serves
+    # whatever --served-model-name was set to (default: the model path).
+    # This must match the `id` from `curl -s localhost:10000/v1/models` exactly —
+    # a mismatch 404s at inference time, not at startup.
+    model_name: "qwen35-local"
+
+    # Generous — a cold model plus a large image can take tens of seconds, and
+    # a spurious timeout costs a whole scan cycle.
+    timeout_sec: 120.0
+    max_tokens: 2048
+
+    # ── Bounding-box coordinate convention ───────────────────────────────────
+    # How to interpret the box coordinates the VLM returns.
+    #   absolute        — already original-image pixels
+    #   normalized_1000 — 0..1000 grid (common for the Qwen-VL family)
+    #   normalized_1    — 0..1 floats
+    # VERIFIED 2026-08-04 against qwen35-local (Qwen3.5-27B) on a 640x480 EE
+    # frame: the model returns a 0-1000 grid. It had been "absolute", and the
+    # failure was invisible — y values up to 994 were clamped to 479, every box
+    # collapsed to zero area, clamp_boxes dropped them all, and the node just
+    # said "no TARGET found ... Detected: []" while target_label and destination
+    # came back perfectly correct. Re-verify if the served model changes:
+    #   python3 qwen_server/qwen_cli.py --image demo/resources/scene1_ee_rgb.png \
+    #     --instruction "pick up the apple" --annotate /tmp/boxes.png
+    bbox_convention: "normalized_1000"
+
+    # ── Topics ───────────────────────────────────────────────────────────────
+    image_topic: "/camera/camera/color/image_raw"
+
+    # ── Dual view ────────────────────────────────────────────────────────────
+    # Empty disables it: one grounding pass on the wrist camera, exactly as
+    # before. Set it to the overhead RGB topic and the node grounds both frames
+    # CONCURRENTLY, splitting the roles:
+    #     wrist -> TARGET        overhead -> DESTINATION
+    # In the Isaac scene this was required for placing (the basket sat outside
+    # the wrist frame). With the single wrist D435i, single view grounds both
+    # TARGET and DESTINATION from the wrist frame — a destination gets a
+    # centroid whenever it is in view.
+    top_image_topic: ""   # no overhead camera on the Gen3 Lite setup
+
+    # Offline test: point at a file to bypass the matching topic entirely.
+    #   ros2 launch qwen_server qwen_server.launch.py image_path:=$PWD/demo/resources/ee_raw.png
+    image_path: ""
+    top_image_path: ""
+    detections_topic: "/qwen/labeled_detections"
+    grounding_topic: "/qwen/grounding_result"
+    source_image_topic: "/qwen/source_image"
+    # Consumed by the SECOND sam_mask_node instance, the one sized to the top
+    # depth image.
+    top_detections_topic: "/qwen/top/labeled_detections"
+    top_source_image_topic: "/qwen/top/source_image"
+
+    # Seed instruction — leave empty to wait for /user_instruction.
+    # Useful for headless replay without the xterm prompt.
+    instruction: ""
+
+instruction_prompt_node:
+  ros__parameters:
+    topic: "/user_instruction"

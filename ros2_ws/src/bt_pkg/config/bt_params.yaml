@@ -1,0 +1,108 @@
+bt_executor_node:
+  ros__parameters:
+    # tree_file is intentionally NOT set here — keep it on the launch arg path.
+    # ROS 2 resolves "bt_executor_node:" (specific) ahead of "/**:" (wildcard),
+    # so a default "" in this file silently overrides launch-arg overrides
+    # passed via parameters dict (which land under /**). Leave it to the launch.
+
+    # Robot model (Kinova Gen3 Lite, gen3_bringup/gen3_lite_moveit.launch.py)
+    planning_group:    "arm"
+    end_effector_link: "tool_frame"   # arm group's IK tip, 13 cm past end_effector_link
+    planning_frame:    "base_link"
+    base_joint_names:  ["joint_1", "joint_2", "joint_3"]   # MoveAction lock_base_joints
+
+    # Action servers
+    move_action:    "/move_action"                                   # move_group, plan + execute
+    gripper_action: "/gen3_lite_2f_gripper_controller/gripper_cmd"   # GripperActionController
+
+    # Gripper — right_finger_bottom_joint angle in rad. Open is 0.0 and closed
+    # is 0.85 (the real-hardware joint limit), inverted vs the Panda.
+    gripper_open_position:  0.0
+    gripper_close_position: 0.85
+    gripper_open_effort:    20.0
+    gripper_close_effort:   50.0
+    # false for use_fake_hardware:=true — fake fingers never stall on an object,
+    # so every close would otherwise count as a missed grasp.
+    gripper_require_contact: true
+
+    # Grasp pipeline depth
+    max_grasp_candidates: 5
+    bt_pick_retries:      5
+
+    # MoveIt planning tolerances
+    position_tolerance:    0.01   # m
+    orientation_tolerance: 0.05   # rad
+
+    # Approach and retreat heights above the grasp pose
+    # NOTE: bt_system.launch.py overrides this with its pre_grasp_z_offset
+    # argument (default 0.03). This value only applies when the node is run
+    # directly with just this params file.
+    pre_grasp_z_offset: 0.12  # m — retracted pose sent before moving to grasp
+    retreat_z_offset:   0.15  # m — lifted pose sent after grasping
+
+    # TargetVisible thresholds
+    target_search_radius_m: 0.25  # m — how far target can drift before considered lost
+    target_staleness_sec:   1.0   # s  — /yolo/target_centroid must arrive within this
+
+    # UpdateTargetPose — YOLO world map matching
+    dest_match_radius_m: 0.3   # m — max distance to match YOLO object to initial centroid
+
+    # MoveToHome (Pick Recovery). PLACEHOLDER: all zeros is the arm pointing
+    # straight up — collision-free but not a pose anyone chose. Replace with a
+    # measured parking pose.
+    home_joint_names:  ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+    home_joint_values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_joint_tolerance: 0.05  # rad — recovery only, accuracy does not matter
+
+    # Observation-pose tolerance. OMPL stops as soon as it is inside the goal
+    # constraint, so this value IS the pose error: at 0.05 the arm settles ~3°
+    # per joint off the latched pose, which moves the EE camera enough to
+    # invalidate the static extrinsics.
+    observation_joint_tolerance: 0.005  # rad (~0.3°)
+
+    # Place pose geometry (destination_calculator.cpp).
+    # Heights describe the RELEASED OBJECT'S UNDERSIDE, not the EE link pose —
+    # the object's half-height and how high EE link rides above its centre are
+    # both measured from the scan and added on. So one clearance value means
+    # the same thing for a book and for a cup.
+    side_offset_m:    0.08   # MINIMUM XY offset for left_of / right_of / in_front_of / behind
+    place_height_m:   0.05   # clearance above the destination's top / support surface
+    container_drop_z: 0.03   # clearance above the container's RIM (bbox_3d_world.max.z)
+    near_offset_m:    0.08   # minimum radial offset for "near"
+    near_clearance_m: 0.05   # gap between the two XY footprints, "near" and named directions alike
+
+    # Surface regions ("the right side of the table") scale with the
+    # destination's own measured footprint — a fixed shift from a table's
+    # centroid is still its middle. Note the footprint is the top-view mask
+    # clipped by the depth/workspace crop, so it can under-report a table
+    # running out of frame; region_max_offset_m is the reach ceiling.
+    region_frac:         0.6   # fraction of the destination's half-extent toward the edge
+    region_max_offset_m: 0.35  # cap on the shift (Panda: 0.45; scaled for Gen3 Lite reach)
+
+    # Hard XY envelope on the RESULT, which is what the arm has to reach — this
+    # is what lets region_max_offset_m be generous. An over-reaching shift is
+    # shortened along its own direction, not dropped. Gen3 Lite spec reach is
+    # 0.760 m; 0.65 leaves room for a top-down wrist. PROVISIONAL — the Panda
+    # value (0.80) was measured in Isaac, this one has not been measured.
+    max_place_reach_m:   0.65
+
+    # Clearance under the CARRIED OBJECT along the transit path. MoveAction's
+    # min_path_z constrains EE link; the object hangs (hold offset + half-height)
+    # below it, so the BT derives the EE link floor per object instead of using a
+    # constant. 0.12 clears the 0.10 m glass with 2 cm to spare.
+    carry_clearance_m:   0.12
+
+    # Placing onto clutter. The geometric offset knows only directions, so
+    # "the left side of the table" lands on the apple if the apple is there.
+    # Obstacles come from /world_map_result "obstacles" — found by HEIGHT above
+    # the support plane, because a table mask swallows the objects on it.
+    place_clearance_m:     0.04  # gap between the placed object and any obstacle
+    place_search_radius_m: 0.20  # how far to look for a clear spot before giving up
+
+    # Keep the pick's yaw so the wrist doesn't twist the held object in transit.
+    # false = fixed straight-down, for when a place is unreachable.
+    place_keep_grasp_yaw: true
+
+    # Groot2 node-model dump. Empty = disabled.
+    bt_models_out: ""
+

@@ -1,0 +1,81 @@
+graspgen_node:
+  ros__parameters:
+    # ── ZMQ server connection ─────────────────────────────────────────────────
+    # SSH tunnel 후 접속할 주소. 서버가 바뀌어도 이 두 값만 수정하면 됨.
+    # Seraph (aurora-g6): environments/ros2/seraph_env.sh opens localhost:40000 -> aurora-g6:40000
+    zmq_host: '127.0.0.1'
+    zmq_port: 40000
+    # Scale with num_grasps — diffusion inference on the server is roughly
+    # linear in batch size. 30000 ms covers num_grasps up to ~512.
+    zmq_timeout_ms: 30000
+
+    # ── inference parameters ──────────────────────────────────────────────────
+    # Paper-aligned defaults (Sundaralingam et al., 2025, §5.1 + Fig. 14):
+    #   • num_grasps      = diffusion sampling batch — larger is better when
+    #                       min_quality is high (paper Fig. 14).
+    #   • topk_num_grasps = 100 grasps published as a "goal set" — paper
+    #                       explicitly recommends this over NMS for downstream
+    #                       motion planners ("inference without non-maximal
+    #                       suppression was better").
+    #   • min_quality     = confidence threshold ≥ 0.5 (paper §6.10).
+    # BT 재시도 횟수는 bt_pkg/config/bt_params.yaml 의 bt_pick_retries 로 분리됨.
+    num_grasps: 200         # 서버에 요청할 diffusion sampling batch
+    topk_num_grasps: 100    # 서버가 발행하는 confidence top-K (paper 권장)
+    min_quality: 0.5        # 클라이언트 confidence 컷오프 (paper 권장 ≥ 0.5)
+    # 후보 JSON 의 'width' 필드 (정보용 — bt_pkg 는 쓰지 않는다). GraspGen 서버는
+    # Franka 그리퍼 모델(graspgen_franka_panda.yml)로 추론한다: Gen3 Lite 2F 는
+    # 완전 개방 시 손끝 간격 ~0.11 m 라 Franka(0.08) 파지를 물리적으로 수용한다.
+    # Franka 모델을 대리(proxy)로 쓰는 것 자체가 PROVISIONAL.
+    gripper_width: 0.08
+
+    # ── Client-side filter stack (Option A) ───────────────────────────────────
+    # The paper expects a goal-set-aware planner (cuRobo); our MoveIt + BT
+    # stack is single-goal sequential. We pre-filter the paper's 100-grasp
+    # goal set down to a small reachable subset before publishing to the BT.
+    # See grasp_filter.py for the implementation.
+
+    # Top-down approach filter: keep grasps whose gripper +Z is within this
+    # many degrees of straight-down. Tuned for packed tabletop where side
+    # grasps risk colliding with neighbouring objects. 90 disables.
+    top_down_filter_enabled: true
+    top_down_angle_deg:      45.0
+
+    # IK feasibility filter: drop grasps unreachable by Panda IK via
+    # MoveIt's /compute_ik. Strongest filter — eliminates goals the BT
+    # could never reach and that risk SIGABRT in hybrid planning.
+    ik_filter_enabled:       true
+    ik_service_name:         '/compute_ik'
+    ik_planning_group:       'arm'
+    ik_ee_link:              'tool_frame'
+    ik_per_call_timeout_sec: 0.10   # per-grasp IK budget
+    ik_service_wait_sec:     5.0    # startup wait for MoveIt
+
+    # Final cap on the published pool size. Keep small (BT-friendly).
+    # bt_pick_retries (bt_pkg bt_params.yaml) defines the actual retry count;
+    # this is the upper bound on what BT can see.
+    max_published_grasps:    10
+
+    # ── point cloud extraction ────────────────────────────────────────────────
+    min_point_count: 50     # TARGET 포인트 최소 수 (이하면 skip)
+    max_points: 4096        # 초과 시 random downsample
+    min_depth: 0.05         # depth 유효 범위 하한 (m)
+    max_depth: 15.0         # depth 유효 범위 상한 (m)
+
+    # ── topic names (오버라이드 가능) ─────────────────────────────────────────
+    ee_depth_topic:           '/camera/camera/aligned_depth_to_color/image_raw'
+    ee_camera_info_topic:     '/camera/camera/aligned_depth_to_color/camera_info'
+    mask_topic:               '/sam/mask_image'
+    labeled_detections_topic: '/qwen/labeled_detections'
+    world_map_result_topic:   '/world_map_result'
+    grasp_candidates_topic:   '/grasp_candidates'
+
+    # ── frames ────────────────────────────────────────────────────────────────
+    # TF extrinsics: target cloud 를 바로 base_link 에서 만든다.
+    world_frame:  'base_link'
+    robot_frame:  'base_link'
+
+    # ── extrinsics ─────────────────────────────
+    # tf  : 매 스캔 depth stamp 의 TF (base_link <- camera_color_optical_frame)
+    # yaml: extrinsics_config 의 정적 R/t (빈 문자열 → mask_projection_pkg 의 Isaac 값)
+    extrinsics_source: 'tf'
+    extrinsics_config: ''

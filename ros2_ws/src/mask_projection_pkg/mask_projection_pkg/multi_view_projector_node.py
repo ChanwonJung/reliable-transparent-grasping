@@ -1,0 +1,579 @@
+"""Two-camera world-frame PointCloud2 builder."""
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from cv_bridge import CvBridge
+from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
+from std_msgs.msg import Header, String
+from tf2_ros import Buffer, TransformException, TransformListener
+
+# /world_map_result 는 Slow Brain 의 1회성 결과 — 한 번 발행 후 BT 가 늦게
+# 구독해도 마지막 메시지 받도록 TRANSIENT_LOCAL. depth=1 (최신 1개만 보관).
+_LATCHED_QOS = QoSProfile(
+    depth=1,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+)
+
+from .cloud_builder import build_pointcloud2
+from .frames import depth_to_metres, lookup_camera_pose
+from .label_mapper import CATEGORY_FREE, CATEGORY_TARGET, CategoryPoints
+from .ply_utils import build_result_json, save_ply_labeled
+from .projection_engine import (
+    collect_seg_points,
+    extract_tabletop_obstacles,
+    filter_free_by_unknown,
+    load_extrinsics,
+    project_labeled,
+    project_unknown,
+)
+
+def _stamp_age_sec(node: Node, msg: Image) -> Optional[float]:
+    stamp = msg.header.stamp
+    stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+    if stamp_ns <= 0:
+        return None
+    age = (node.get_clock().now().nanoseconds - stamp_ns) * 1e-9
+    # Isaac/sim headers and ROS/system clock can use different epochs. In that
+    # case the computed age becomes huge and is less useful than omitting it.
+    if age < 0.0 or age > 3600.0:
+        return None
+    return age
+
+
+def _find_output_dir() -> Path:
+    # reliable-transparent-grasping root = the directory holding both ros2_ws/
+    # and experiments/. experiments/logs/ is gitignored.
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "ros2_ws").exists() and (parent / "experiments").exists():
+            return parent / "experiments" / "logs" / "slow_brain"
+    return Path.home() / ".ros" / "slow_brain"
+
+
+_OUTPUT_DIR = _find_output_dir()
+
+
+class MultiViewProjectorNode(Node):
+
+    def __init__(self) -> None:
+        super().__init__('multi_view_projector_node')
+
+        # ── parameters ───────────────────────────────────────────────────────
+        self.declare_parameter('top_depth_topic',        '')
+        self.declare_parameter('top_camera_info_topic',  '')
+        self.declare_parameter('ee_depth_topic',
+                               '/camera/camera/aligned_depth_to_color/image_raw')
+        self.declare_parameter('ee_camera_info_topic',
+                               '/camera/camera/aligned_depth_to_color/camera_info')
+        self.declare_parameter('mask_topic',             '/grounded_sam/mask_image')
+        self.declare_parameter('detections_topic',       '/grounded_sam/detections_json')
+        # ── Top-view labeled pass (dual-view Slow Brain) ─────────────────────
+        # Empty disables it and the node behaves exactly as before: the EE mask
+        # supplies every category and the top camera contributes only UNKNOWN
+        # geometry.  Set both to run a SECOND project_labeled pass over the top
+        # depth image, which is the only way a DESTINATION centroid can exist —
+        # the wrist camera cannot see the basket at all (its near limit on the
+        # table is x ~ 0.58 m in panda_link0; the basket sits at x = 0.48).
+        self.declare_parameter('top_mask_topic',         '')
+        self.declare_parameter('top_detections_topic',   '')
+        # How long to wait for the top mask after the EE mask arrives before
+        # publishing without it.  The two masks come from independent SAM
+        # instances with no shared scan id, so pairing is by arrival window.
+        # Publishing EE-only on expiry keeps a failed overhead pass from
+        # stalling the pick.
+        self.declare_parameter('top_mask_timeout_sec',   8.0)
+        self.declare_parameter('output_cloud_topic',     '/world_map')
+        self.declare_parameter('output_result_topic',    '/world_map_result')
+        self.declare_parameter('output_raw_cloud_topic', '/world_cloud_raw')
+        self.declare_parameter('initials',               '')
+        self.declare_parameter('min_depth', 0.05)
+        self.declare_parameter('max_depth', 15.0)
+        self.declare_parameter('ee_seg_filter_radius',    0.015)  # metres — XY footprint radius
+        self.declare_parameter('ee_seg_z_margin',         0.10)   # metres — Z gate for seg filter
+        self.declare_parameter('free_unknown_xy_radius',  0.05)   # metres — Pass 2 XY radius
+        self.declare_parameter('free_unknown_z_margin',   0.10)   # metres — Pass 2 Z gate
+        # 한 번 publish 후 새 mask 입력 무시 (true) — robot 이 움직여 EE 카메라 시점이
+        # 바뀌면 정적 extrinsics 가 깨져 재투영이 망가짐 ([[project-slow-brain-static-extrinsics]]).
+        # 첫 발행 후 freeze 하면 BT 가 일관된 데이터로 끝까지 작업 가능.
+        self.declare_parameter('freeze_after_first_publish', False)
+
+        _default_extrinsics = os.path.join(
+            get_package_share_directory('mask_projection_pkg'),
+            'config', 'camera_extrinsics.yaml',
+        )
+        self.declare_parameter('extrinsics_config', _default_extrinsics)
+        # 'tf'   — camera pose from TF at each depth frame's stamp (real robot:
+        #          the wrist camera moves with the arm, so a static pose is wrong
+        #          everywhere except where it was measured).
+        # 'yaml' — static R/t from extrinsics_config (the Isaac behaviour).
+        self.declare_parameter('extrinsics_source', 'tf')
+        self.declare_parameter('world_frame',       'base_link')
+        self.declare_parameter('tf_timeout_sec',    0.5)
+
+        top_depth_topic        = self.get_parameter('top_depth_topic').value
+        top_camera_info_topic  = self.get_parameter('top_camera_info_topic').value
+        ee_depth_topic         = self.get_parameter('ee_depth_topic').value
+        ee_camera_info_topic   = self.get_parameter('ee_camera_info_topic').value
+        mask_topic             = self.get_parameter('mask_topic').value
+        detections_topic       = self.get_parameter('detections_topic').value
+        top_mask_topic         = self.get_parameter('top_mask_topic').value
+        top_detections_topic   = self.get_parameter('top_detections_topic').value
+        self._top_mask_timeout = float(self.get_parameter('top_mask_timeout_sec').value)
+        output_cloud_topic     = self.get_parameter('output_cloud_topic').value
+        output_result_topic    = self.get_parameter('output_result_topic').value
+        output_raw_cloud_topic = self.get_parameter('output_raw_cloud_topic').value
+        self._min_depth        = self.get_parameter('min_depth').value
+        self._max_depth        = self.get_parameter('max_depth').value
+        self._ee_seg_filter_radius    = self.get_parameter('ee_seg_filter_radius').value
+        self._ee_seg_z_margin         = self.get_parameter('ee_seg_z_margin').value
+        self._free_unknown_xy_radius  = self.get_parameter('free_unknown_xy_radius').value
+        self._free_unknown_z_margin   = self.get_parameter('free_unknown_z_margin').value
+        self._initials                = self.get_parameter('initials').value
+        self._freeze_after_first      = bool(self.get_parameter('freeze_after_first_publish').value)
+        self._frozen                  = False
+        extrinsics_path        = self.get_parameter('extrinsics_config').value
+        # launch file may pass '' (empty string) → fall back to package default
+        if not extrinsics_path:
+            extrinsics_path = _default_extrinsics
+
+        self._extrinsics_source = self.get_parameter('extrinsics_source').value
+        self._world_frame       = self.get_parameter('world_frame').value
+        self._tf_timeout        = float(self.get_parameter('tf_timeout_sec').value)
+        if self._extrinsics_source not in ('tf', 'yaml'):
+            raise ValueError(
+                f"extrinsics_source must be 'tf' or 'yaml', got '{self._extrinsics_source}'")
+
+        # ── camera extrinsics ─────────────────────────────────────────────────
+        if self._extrinsics_source == 'tf':
+            self._tf_buffer   = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
+            extrinsics_desc   = f'tf ({self._world_frame} <- depth frame_id)'
+        else:
+            (self._R_TOP, self._t_TOP,
+             self._R_EE,  self._t_EE, _ext_warn) = load_extrinsics(extrinsics_path)
+            if _ext_warn:
+                self.get_logger().warn(
+                    f'Failed to load extrinsics from "{extrinsics_path}": {_ext_warn}. '
+                    'Using identity transforms — point cloud will be in camera frame.'
+                )
+            else:
+                self.get_logger().info(f'Loaded camera extrinsics from {extrinsics_path}')
+            extrinsics_desc = extrinsics_path
+
+        # ── cache ─────────────────────────────────────────────────────────────
+        self._bridge = CvBridge()
+
+        # Top camera (optional — node warns and falls back to EE-only if absent)
+        self._top_depth:  Optional[Image]      = None
+        self._top_info:   Optional[CameraInfo] = None
+
+        # EE camera
+        self._ee_depth:   Optional[Image]      = None
+        self._ee_info:    Optional[CameraInfo] = None
+
+        # GSAM outputs
+        self._latest_detections: Optional[List[Dict]] = None
+
+        # Top-view labeled pass. Enabled only when BOTH topics are configured —
+        # a mask without its detections cannot be joined to a category.
+        self._top_labeled_enabled = bool(top_mask_topic and top_detections_topic)
+        self._top_mask:            Optional[Image]      = None
+        self._top_detections:      Optional[List[Dict]] = None
+        self._pending_ee_mask:     Optional[Image]      = None
+        self._top_wait_timer                            = None
+
+        # ── subscribers ───────────────────────────────────────────────────────
+        # Empty = no overhead camera; a subscription on '' would fail to create.
+        if top_depth_topic and top_camera_info_topic:
+            self.create_subscription(Image,      top_depth_topic,       self._top_depth_cb, 10)
+            self.create_subscription(CameraInfo, top_camera_info_topic, self._top_info_cb,  10)
+        self.create_subscription(Image,      ee_depth_topic,        self._ee_depth_cb,   10)
+        self.create_subscription(CameraInfo, ee_camera_info_topic,  self._ee_info_cb,    10)
+        self.create_subscription(String,     detections_topic,      self._json_cb,       10)
+        self.create_subscription(Image,      mask_topic,            self._mask_cb,       10)
+        if self._top_labeled_enabled:
+            self.create_subscription(
+                String, top_detections_topic, self._top_json_cb, 10)
+            self.create_subscription(
+                Image,  top_mask_topic,       self._top_mask_cb, 10)
+
+        # ── publishers ────────────────────────────────────────────────────────
+        self._pub_cloud     = self.create_publisher(PointCloud2, output_cloud_topic,     10)
+        # /world_map_result 만 latched — Slow Brain 결과를 BT 가 늦게 받아도 됨.
+        # PointCloud2 들은 RViz 표시용이라 VOLATILE 유지 (latching 시 RViz 가
+        # 오래된 cloud 누적 표시할 수 있어 의도와 다름).
+        self._pub_result    = self.create_publisher(String,      output_result_topic,    _LATCHED_QOS)
+        self._pub_raw_cloud = self.create_publisher(PointCloud2, output_raw_cloud_topic, 10)
+
+        self.get_logger().info(
+            f'MultiViewProjectorNode ready — '
+            f'depth=[{self._min_depth}, {self._max_depth}]m  '
+            f'trigger={mask_topic}  '
+            + (f'top_labeled={top_mask_topic} (timeout '
+               f'{self._top_mask_timeout:.1f}s)  '
+               if self._top_labeled_enabled else 'top_labeled=off  ')
+            + f'extrinsics={extrinsics_desc}'
+        )
+
+    def _camera_pose(self, view: str, depth_msg: Image):
+        """(R, t) for this view's depth frame, or None when TF has no answer."""
+        if self._extrinsics_source == 'yaml':
+            return (self._R_EE, self._t_EE) if view == 'ee' else (self._R_TOP, self._t_TOP)
+        try:
+            return lookup_camera_pose(
+                self._tf_buffer, self._world_frame, depth_msg, self._tf_timeout)
+        except TransformException as e:
+            self.get_logger().warn(
+                f'{view} camera pose unavailable ({self._world_frame} <- '
+                f'{depth_msg.header.frame_id}): {e}')
+            return None
+
+    # ── cache callbacks ───────────────────────────────────────────────────────
+
+    def _top_depth_cb(self, msg: Image) -> None:
+        self._top_depth = msg
+
+    def _top_info_cb(self, msg: CameraInfo) -> None:
+        self._top_info = msg
+
+    def _ee_depth_cb(self, msg: Image) -> None:
+        self._ee_depth = msg
+
+    def _ee_info_cb(self, msg: CameraInfo) -> None:
+        self._ee_info = msg
+
+    def _json_cb(self, msg: String) -> None:
+        try:
+            self._latest_detections = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(f'detections_json parse error: {e}')
+
+    def _top_json_cb(self, msg: String) -> None:
+        try:
+            self._top_detections = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(f'top detections_json parse error: {e}')
+
+    def _top_mask_cb(self, mask_msg: Image) -> None:
+        self._top_mask = mask_msg
+        self._try_fire()
+
+    # ── trigger callback ──────────────────────────────────────────────────────
+
+    def _mask_cb(self, mask_msg: Image) -> None:
+        # The EE mask is the trigger. When the top labeled pass is enabled we
+        # still need its mask, which comes from an independent SAM instance —
+        # so cache and let _try_fire decide whether to wait.
+        self._pending_ee_mask = mask_msg
+        self._try_fire()
+
+    def _try_fire(self, from_timeout: bool = False) -> None:
+        # Freeze mode: 한 번 publish 한 뒤로 신규 mask 전부 drop. latched QoS 가
+        # 마지막 발행을 BT 에 영원히 노출하므로 추가 갱신은 오히려 해로움.
+        if self._frozen:
+            return
+
+        ee_mask = self._pending_ee_mask
+        if ee_mask is None:
+            # Top mask arrived first — nothing to project until the EE trigger.
+            return
+
+        have_top = self._top_mask is not None and self._top_detections is not None
+
+        if self._top_labeled_enabled and not have_top and not from_timeout:
+            self._arm_top_timer()
+            return
+
+        if self._top_labeled_enabled and not have_top:
+            self.get_logger().warn(
+                f'top mask did not arrive within {self._top_mask_timeout:.1f}s '
+                '— publishing the EE view only. /world_map_result will carry NO '
+                'destination centroid, so the place phase has no pose.')
+
+        self._cancel_top_timer()
+        # Masks are one-shot triggers, never replayed.
+        self._pending_ee_mask = None
+        top_mask = self._top_mask if have_top else None
+        top_dets = self._top_detections if have_top else None
+        self._top_mask = None
+
+        self._process(ee_mask, top_mask, top_dets)
+
+    def _arm_top_timer(self) -> None:
+        if self._top_wait_timer is None:
+            self._top_wait_timer = self.create_timer(
+                self._top_mask_timeout, self._on_top_timeout)
+
+    def _on_top_timeout(self) -> None:
+        self._cancel_top_timer()
+        self._try_fire(from_timeout=True)
+
+    def _cancel_top_timer(self) -> None:
+        if self._top_wait_timer is not None:
+            self._top_wait_timer.cancel()
+            self.destroy_timer(self._top_wait_timer)
+            self._top_wait_timer = None
+
+    def _process(
+        self,
+        mask_msg: Image,
+        top_mask: Optional[Image] = None,
+        top_detections: Optional[List[Dict]] = None,
+    ) -> None:
+        t_total = time.monotonic()
+        # EE camera is required — top camera is optional (degrades gracefully)
+        if self._ee_depth is None or self._ee_info is None:
+            self.get_logger().warn('Waiting for EE camera depth/camera_info...')
+            return
+        if self._latest_detections is None:
+            self.get_logger().warn('Waiting for detections_json...')
+            return
+
+        ee_pose = self._camera_pose('ee', self._ee_depth)
+        if ee_pose is None:
+            # Projecting with a guessed pose puts every point in the wrong place
+            # without any error downstream. Drop the scan instead.
+            self.get_logger().error('EE camera pose unknown — scan dropped')
+            return
+        R_ee, t_ee_vec = ee_pose
+        top_pose = (self._camera_pose('top', self._top_depth)
+                    if self._top_depth is not None else None)
+
+        all_category_points: List[CategoryPoints] = []
+
+        # ── EE camera view ────────────────────────────────────────────────────
+        t_ee = time.monotonic()
+        ee_pts = self._project_labeled(
+            self._ee_depth, self._ee_info, mask_msg,
+            self._latest_detections, R_ee, t_ee_vec,
+        )
+        dt_ee = time.monotonic() - t_ee
+
+        # ── Top camera view — labeled pass (dual-view Slow Brain) ─────────────
+        # The wrist camera cannot see the destination, so this is where a
+        # DESTINATION centroid actually comes from. Same engine call as the EE
+        # pass, just with the top depth/intrinsics/extrinsics.
+        top_labeled: List[CategoryPoints] = []
+        dt_top_labeled = 0.0
+        if top_mask is not None and top_detections is not None:
+            if self._top_depth is None or self._top_info is None or top_pose is None:
+                self.get_logger().warn(
+                    'top mask received but no top depth/camera_info/pose — '
+                    'skipping the top labeled pass'
+                )
+            else:
+                t_tl = time.monotonic()
+                top_labeled = [
+                    cp for cp in self._project_labeled(
+                        self._top_depth, self._top_info, top_mask,
+                        top_detections, *top_pose,
+                    )
+                    # Drop FREE. FREE means "the EE camera looked here and found
+                    # nothing", which is what lets the octomap treat it as empty
+                    # space. The top camera's background is the table and every
+                    # other object — that is UNKNOWN geometry, and calling it
+                    # FREE would carve real obstacles out of the planning scene.
+                    if cp.category != CATEGORY_FREE
+                ]
+                dt_top_labeled = time.monotonic() - t_tl
+                self.get_logger().info(
+                    'Top labeled: ' + (', '.join(
+                        f'{cp.label}={len(cp.points)}pts' for cp in top_labeled)
+                        or '(nothing segmented)')
+                )
+
+        # ── Top camera view — Pass 1: remove UNKNOWN near EE seg (XY + Z gate) ──
+        top_pts: Optional[CategoryPoints] = None
+        dt_top = 0.0
+        if (self._top_depth is not None and self._top_info is not None
+                and top_pose is not None):
+            t_top = time.monotonic()
+            # Top-labeled points are fed in alongside the EE ones so the basket
+            # is not emitted twice — once as DESTINATION and again as UNKNOWN.
+            ee_seg_pts = collect_seg_points(ee_pts + top_labeled)
+            top_pts = self._project_unknown(
+                self._top_depth, self._top_info,
+                *top_pose,
+                ee_seg_pts=ee_seg_pts,
+                ee_seg_filter_radius=self._ee_seg_filter_radius,
+                ee_seg_z_margin=self._ee_seg_z_margin,
+            )
+            dt_top = time.monotonic() - t_top
+        elif self._top_labeled_enabled:
+            # Only worth a warning when a top view was actually configured —
+            # the single wrist-camera setup never has one.
+            self.get_logger().warn(
+                'Top camera not available — publishing EE view only. '
+                'Check top_depth_topic / top_camera_info_topic parameters.'
+            )
+
+        # ── Pass 2: UNKNOWN > FREE — remove EE FREE near top UNKNOWN ─────────
+        t_filter = time.monotonic()
+        if top_pts is not None:
+            ee_pts = filter_free_by_unknown(
+                ee_pts, top_pts,
+                self._free_unknown_xy_radius,
+                self._free_unknown_z_margin,
+            )
+        dt_filter = time.monotonic() - t_filter
+
+        if ee_pts:
+            all_category_points.extend(ee_pts)
+        if top_labeled:
+            all_category_points.extend(top_labeled)
+        if top_pts is not None:
+            all_category_points.append(top_pts)
+
+        if not all_category_points:
+            self.get_logger().warn('No valid points from either camera.')
+            return
+
+        self.get_logger().info(
+            'World map: ' +
+            ', '.join(f'{cp.label}={len(cp.points)}pts' for cp in all_category_points)
+        )
+
+        header = Header()
+        header.stamp    = self.get_clock().now().to_msg()
+        header.frame_id = 'world'
+
+        # ── tabletop clutter ──────────────────────────────────────────────────
+        # The support plane comes from the TARGET's own underside, not from any
+        # surface mask: the object is standing on the plane, which is physics,
+        # while a "table" mask's own z is whatever the mask leaked onto (two
+        # scans minutes apart gave centroid z 0.007 and -0.768). Without a
+        # target there is nothing to place and nothing to measure from.
+        obstacles = []
+        target_pts = [cp.points for cp in all_category_points
+                      if cp.category == CATEGORY_TARGET and len(cp.points)]
+        if target_pts:
+            surface_z = float(np.vstack(target_pts)[:, 2].min())
+            obstacles = extract_tabletop_obstacles(all_category_points, surface_z)
+            self.get_logger().info(
+                f'Tabletop obstacles: {len(obstacles)} on plane z={surface_z:+.4f}'
+                + ''.join(f" [{o['centroid'][0]:+.3f},{o['centroid'][1]:+.3f}"
+                          f" r={o['xy_radius']:.3f} top={o['top_z']:+.3f}]"
+                          for o in obstacles))
+
+        # ── publish ───────────────────────────────────────────────────────────
+        t_build_publish = time.monotonic()
+        self._pub_cloud.publish(build_pointcloud2(header, all_category_points))
+        self._pub_result.publish(
+            String(data=build_result_json(all_category_points, obstacles)))
+        self._pub_raw_cloud.publish(self._build_raw_cloud(header, all_category_points))
+        dt_build_publish = time.monotonic() - t_build_publish
+
+        # 첫 발행 후 freeze — 이후 mask 입력은 모두 무시.
+        if self._freeze_after_first and not self._frozen:
+            self._frozen = True
+            self.get_logger().info('FROZEN — 이후 mask 입력 무시. latched /world_map_result 그대로 유지.')
+
+        # ── save PLY to disk ──────────────────────────────────────────────────
+        t_save = time.monotonic()
+        stamp  = self._ee_depth.header.stamp.sec
+        prefix = f"{self._initials}_" if self._initials else ""
+        save_ply_labeled(
+            _OUTPUT_DIR / f"world_map_{prefix}{stamp}.ply",
+            all_category_points,
+        )
+        dt_save = time.monotonic() - t_save
+        mask_age = _stamp_age_sec(self, mask_msg)
+        ee_depth_age = _stamp_age_sec(self, self._ee_depth) if self._ee_depth is not None else None
+        top_depth_age = _stamp_age_sec(self, self._top_depth) if self._top_depth is not None else None
+        mask_age_text = f"{mask_age:.3f}s" if mask_age is not None else "n/a"
+        ee_age_text = f"{ee_depth_age:.3f}s" if ee_depth_age is not None else "n/a"
+        top_age_text = f"{top_depth_age:.3f}s" if top_depth_age is not None else "n/a"
+        self.get_logger().info(
+            f"[PROFILE][projector] total={time.monotonic() - t_total:.3f}s "
+            f"ee_project={dt_ee:.3f}s top_labeled={dt_top_labeled:.3f}s "
+            f"top_project={dt_top:.3f}s "
+            f"free_unknown_filter={dt_filter:.3f}s "
+            f"build_publish={dt_build_publish:.3f}s save_ply={dt_save:.3f}s "
+            f"categories={len(all_category_points)} "
+            f"mask_age={mask_age_text} ee_depth_age={ee_age_text} top_depth_age={top_age_text}"
+        )
+
+    # ── raw cloud (geometry-only for MoveIt2 OctoMap) ────────────────────────
+
+    def _build_raw_cloud(self, header, category_points: List[CategoryPoints]) -> PointCloud2:
+        all_pts = np.concatenate([cp.points for cp in category_points], axis=0).astype(np.float32)
+        N = len(all_pts)
+        dt = np.dtype([('x', np.float32), ('y', np.float32), ('z', np.float32)])
+        arr = np.zeros(N, dtype=dt)
+        arr['x'] = all_pts[:, 0]
+        arr['y'] = all_pts[:, 1]
+        arr['z'] = all_pts[:, 2]
+        fields = [
+            PointField(name='x', offset=0,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4,  datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
+        ]
+        msg = PointCloud2()
+        msg.header     = header
+        msg.height     = 1
+        msg.width      = N
+        msg.fields     = fields
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step   = 12 * N
+        msg.is_dense   = True
+        msg.data       = arr.tobytes()
+        return msg
+
+    # ── projection helpers (ROS decode → engine call) ─────────────────────────
+
+    def _project_unknown(
+        self,
+        depth_msg:             Image,
+        info_msg:              CameraInfo,
+        R:                     np.ndarray,
+        t:                     np.ndarray,
+        ee_seg_pts:            Optional[np.ndarray] = None,
+        ee_seg_filter_radius:  float = 0.015,
+        ee_seg_z_margin:       float = 0.10,
+    ) -> Optional[CategoryPoints]:
+        depth = depth_to_metres(depth_msg)
+        K     = np.array(info_msg.k, dtype=np.float64).reshape(3, 3)
+        return project_unknown(
+            depth, K, R, t,
+            self._min_depth, self._max_depth,
+            ee_seg_pts, ee_seg_filter_radius, ee_seg_z_margin,
+        )
+
+    def _project_labeled(
+        self,
+        depth_msg:  Image,
+        info_msg:   CameraInfo,
+        mask_msg:   Image,
+        detections: List[Dict],
+        R:          np.ndarray,
+        t:          np.ndarray,
+    ) -> List[CategoryPoints]:
+        depth = depth_to_metres(depth_msg)
+        mask  = self._bridge.imgmsg_to_cv2(mask_msg,  desired_encoding='mono8')
+        K     = np.array(info_msg.k, dtype=np.float64).reshape(3, 3)
+        return project_labeled(depth, K, mask, detections, R, t,
+                               self._min_depth, self._max_depth)
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = MultiViewProjectorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()

@@ -10,7 +10,7 @@
 
   Frame chain added: camera_link, camera_color_frame(+_optical_frame),
   camera_depth_frame(+_optical_frame), matching the RealSense driver's own
-  topic/TF convention (see tests/realsense_rgbd.rviz in the repo root).
+  topic/TF convention (see demos/realsense_rgbd.rviz in the repo root).
 -->
 <robot name="gen3_lite_d435i" xmlns:xacro="http://ros.org/wiki/xacro">
 

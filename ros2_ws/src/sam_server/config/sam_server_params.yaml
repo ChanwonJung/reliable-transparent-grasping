@@ -1,0 +1,74 @@
+# sam_server — SAM 2.1 box-prompted segmentation on the Seraph GPUs.
+#
+# Loading order (later wins): this file -> launch args. (robot_capstone's
+# robot_defaults.yaml is no longer loaded — it carries Isaac/Panda values.)
+#
+# Keep this block keyed `/**`, not `sam_mask_node` — see the same note in
+# qwen_server_params.yaml. A node-name-keyed block outranks the `/**` file that
+# `ros2 launch` generates for its inline overrides, so launch arguments like
+# sam_host/sam_port would be silently ignored.
+
+/**:
+  ros__parameters:
+
+    # ── Remote server ────────────────────────────────────────────────────────
+    # Reached through the SSH tunnel opened by environments/ros2/seraph_env.sh:
+    #   localhost:20000 -> aurora-g6:20000 (Seraph, loopback-only)
+    # 40000 = GraspGen, 30000 = SwinDRNet, 10000 = Qwen. 20000 is SAM's slot.
+    zmq_host: "127.0.0.1"
+    zmq_port: 20000
+    zmq_timeout_ms: 30000
+
+    # ── Topics ───────────────────────────────────────────────────────────────
+    # source_image is the TRIGGER: qwen_bridge publishes it LAST, after the
+    # detections. Triggering on detections instead would race, because ROS 2
+    # gives no ordering guarantee across topics.
+    source_image_topic: "/qwen/source_image"
+    detections_topic:   "/qwen/labeled_detections"
+    mask_topic:         "/sam/mask_image"
+    annotated_topic:    "/sam/annotated_image"
+
+    # The label map MUST match the DEPTH resolution of the view being
+    # segmented, which the projector uses to index it. Read from CameraInfo at
+    # runtime; override only if the camera_info topic is unavailable.
+    #
+    # camera_info_topic is the view-neutral name and wins when non-empty — the
+    # overhead instance sets it to the TOP camera_info. ee_camera_info_topic is
+    # the fallback so existing launches keep working unchanged.
+    camera_info_topic: ""
+    ee_camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
+    mask_width:  0      # 0 = take it from CameraInfo
+    mask_height: 0
+
+    # ── Behaviour ────────────────────────────────────────────────────────────
+    # multimask: ask SAM for 3 candidates per box and keep the best-scoring.
+    # Worth enabling for objects with parts (a mug body vs body+handle) where a
+    # box alone is genuinely ambiguous.
+    multimask: false
+
+    # On overlap, let the LOWER detection index win, i.e. TARGET beats
+    # DESTINATION. Inverts GSAM's "later wins" convention deliberately — a
+    # target sitting over its own destination is the common case, and grasp
+    # quality depends on the target mask staying intact.
+    target_priority: true
+
+    # Below this pixel count a mask is almost certainly a wrong-box artefact
+    # rather than a real object. Warns; does not suppress.
+    min_mask_pixels: 50
+
+    publish_annotated: true
+
+    # Mirror the annotated overlay to disk as <name>_latest.png. The overlay is
+    # what tells you whether the VLM boxed the object you actually named, and
+    # on the topic alone it is gone as soon as the next scan lands.
+    #
+    # Left empty here and set by slow_brain.launch.py to
+    # <repo>/experiments/logs/slow_brain/annotated (gitignored) — a hardcoded
+    # absolute path would write into one developer's home directory and nowhere
+    # on any other machine. The launch file also sets annotated_save_name to
+    # "ee"/"top" so the two instances do not overwrite each other.
+    annotated_save_dir: ""
+    annotated_save_name: "ee"
+    # Also keep <name>_<stamp>.png per scan. Off by default; a long session
+    # would fill the directory.
+    annotated_save_history: false
