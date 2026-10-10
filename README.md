@@ -1,61 +1,77 @@
-# Reliability-Aware Transparent Object Depth Restoration
+# FRAME: A Confidence-Guided Fusion Model of RGB-D and Monocular Priors for Transparent and Specular Object Depth Restoration
 
-Research workspace for KSC 2026: restoring transparent-object depth and evaluating the effect on Kinova Gen3 grasping.
+FRAME is the third depth-restoration model, served on port **32000**. Its code/config
+identifier is `frame`; model selection also accepts `FRAME`.
 
-## Scope
+This branch adds the local tools needed to view, score, and consume FRAME depth:
 
-This repository intentionally separates two systems:
+- A live RGB-D restoration viewer with SAM2 click prompts and confidence maps.
+- Ground-truth capture, restoration metrics, and saved HTML/JSON evaluation reports.
+- A ROS 2 adapter that matches captured RGB-D scans to their target masks and publishes restored depth.
+- Documentation and SSH forwarding for the restoration services.
 
-1. **Offline depth-restoration research** — SwinDRNet-compatible baselines, reliability modeling, datasets, metrics, and reproducible experiments.
-2. **Online robot integration** — ROS 2 Jazzy wrappers that consume a restored-depth result and pass a grasp pose to Kinova Gen3. It does not contain the Kinova driver itself.
+The model architecture, training implementation, checkpoints, and inference server
+live separately on Seraph and are not present in this checkout. SwinDRNet (30000)
+and ReMake (31000) remain selectable in the shared comparison tools. This branch
+does not include the pending robot motion, grasp planning, calibration, or combined
+robot-pipeline changes from the local working tree.
 
-The existing Kinova installation stays at `~/workspace/ros2_kortex_ws`. This repository owns only project-specific ROS 2 packages and adapters.
+## View and score FRAME
 
-## Research question
+Use a ROS 2 environment with `realsense2_camera`, `cv_bridge`, `message_filters`,
+NumPy, and OpenCV. Open the SSH tunnels on the host, overriding the login names
+for your cluster account:
 
-Can an explicit estimate of *raw-depth reliability*, guided by transparent-object masks and monocular relative-depth priors, improve over SwinDRNet's implicitly learned confidence fusion?
-
-`confidence` and `reliability` are deliberately distinct:
-
-- **Confidence**: the original SwinDRNet fusion weight, trained through final-depth reconstruction loss.
-- **Reliability**: a proposed explicit estimate that the measured raw sensor depth is trustworthy at a pixel.
-
-The proposed formulation is not fixed. All choices about target generation, masks, priors, fusion, and loss weights remain configuration options until validated.
-
-## Layout
-
-```text
-configs/                 Experiment overlays; no architecture edits per ablation
-docs/                    Research assumptions, architecture contracts, experiment protocol
-external/                Pointers to immutable upstream SwinDRNet and GraspGen clones/submodules
-src/                     Python research code; independent of ROS 2
-ros2_ws/src/             Project ROS 2 adapters; independent of training code
-scripts/                 Thin train / evaluate / inference entrypoints
-experiments/             Ignored outputs, tracked documentation only
-requirements/            Dependency manifests split by purpose
-environments/            Environment setup notes
-data/                    Ignored datasets and dataset manifests
+```bash
+export SERAPH_JUMP=user@aurora.khu.ac.kr:30080 SERAPH_HOST=user@aurora-g6
+source environments/ros2/seraph_env.sh
 ```
 
-## First planned analyses
+In a terminal with ROS sourced, start one aligned RGB-D camera:
 
-1. Reproduce the unmodified SwinDRNet baseline.
-2. Run the **oracle upper-bound** evaluation: choose raw or predicted depth per pixel using ground truth, then compare it with predicted and original confidence-fused depth.
-3. Only pursue an explicit reliability branch if that oracle gap is meaningful under the chosen metrics and regions.
+```bash
+ros2 launch realsense2_camera rs_launch.py camera_name:=camera camera_namespace:=camera \
+  align_depth.enable:=true enable_sync:=true
+```
 
-The oracle interface is defined in [`src/depth_restoration/evaluation/oracle_fusion.py`](src/depth_restoration/evaluation/oracle_fusion.py). It is a contract, not an implementation yet.
+In another terminal with the same ROS environment:
 
-## Configuration convention
+```bash
+python3 demos/restore_depth_viewer.py --model FRAME
+```
 
-Each file in `configs/` is an experiment overlay with `extends: base`. A future lightweight loader will resolve the overlay explicitly; no configuration framework is required at this stage.
+`--model 32000` selects the same service. Click the transparent object to supply
+SAM2 prompts; right-click marks background, `c` clears prompts, and `u` undoes.
+The confidence row shows `C = 1 - pred_weight`, the confidence in raw depth.
 
-- `swindrnet_baseline.yaml`: original behavior only.
-- `reliability*.yaml`: proposed branches and priors, kept separate from the baseline.
+With a fixed camera, press `g` while an opaque stand-in occupies the object's
+position to capture reference depth. Replace it with the transparent object,
+click it, then press Space to score the next restored frames. Captures go to
+`data/captures/` and include `metrics.json` and a self-contained `report.html`.
+See [the viewer guide](demos/README.md#3-live-depth-restoration-viewer) for metric
+definitions, options, and troubleshooting.
 
-Record the resolved config, upstream commit, dataset split, checkpoint path, and metrics with every result; see [`docs/experiments/reproducibility.md`](docs/experiments/reproducibility.md).
+## Consume FRAME depth in ROS
 
-## Status
+```bash
+cd ros2_ws
+colcon build --packages-select depth_restoration_ros
+source install/setup.bash
+ros2 run depth_restoration_ros depth_restoration_node --ros-args -p model:=FRAME
+```
 
-Scaffold only. No SwinDRNet architecture, loss, reliability target, calibration method, or robot behavior has been committed as a research decision.
+Use `-p frame_url:=http://HOST:32000/restore_depth` to override the endpoint.
+Inputs are a captured RGB-D scan, camera intrinsics, stamped detections, and a
+matching SAM label map. Output depth uses float32 metres and retains raw depth
+outside the target by default. The [adapter guide](ros2_ws/src/depth_restoration_ros/README.md)
+defines topics, timestamp matching, units, and failure handling.
 
-See [`ROADMAP.md`](ROADMAP.md) for the ordered plan.
+## Validate without model services or robot hardware
+
+```bash
+PYTHONPATH=ros2_ws/src/depth_restoration_ros python3 -m pytest -q \
+  ros2_ws/src/depth_restoration_ros/test demos/test_frame_restoration.py
+```
+
+Tests exercise real multipart HTTP requests against a loopback service double,
+FRAME selection, response validation, depth units, scan matching, and capture naming.

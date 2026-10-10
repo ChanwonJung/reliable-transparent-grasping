@@ -25,7 +25,9 @@ Tunnels (aurora-g6 via `aurora.khu.ac.kr:30080`; override with `SERAPH_JUMP` / `
 |---|---|
 | 10000 | Qwen3.5-27B (SGLang, OpenAI-compatible HTTP) |
 | 20000 | SAM 2.1 (ZMQ) |
-| 30000 | SwinDRNet (ZMQ) |
+| 30000 | SwinDRNet (HTTP; legacy graspgen client uses ZMQ) |
+| 31000 | ReMake depth completion (HTTP) |
+| 32000 | FRAME depth restoration (HTTP) |
 | 40000 | GraspGen (ZMQ) |
 
 The same ports are the client defaults in `qwen_server`, `sam_server` and `graspgen_pkg` — change both together.

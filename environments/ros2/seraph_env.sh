@@ -15,7 +15,9 @@
 #
 #        10000  Qwen3.5-27B (SGLang, OpenAI-compatible HTTP)   qwen_server
 #        20000  SAM 2.1 (ZMQ REQ/REP)                          sam_server
-#        30000  SwinDRNet (ZMQ REQ/REP)                        graspgen_pkg
+#        30000  SwinDRNet (HTTP/FastAPI; legacy graspgen client uses ZMQ)
+#        31000  ReMake depth completion (HTTP/FastAPI)
+#        32000  FRAME depth restoration (HTTP/FastAPI)
 #        40000  GraspGen (ZMQ REQ/REP)                         graspgen_pkg
 #
 # Override the SSH endpoints without editing this file:
@@ -109,6 +111,8 @@ else
     _rtg_open_tunnel 10000 "Qwen (SGLang)" || _rtg_fails=$((_rtg_fails + 1))
     _rtg_open_tunnel 20000 "SAM 2.1"       || _rtg_fails=$((_rtg_fails + 1))
     _rtg_open_tunnel 30000 "SwinDRNet"     || _rtg_fails=$((_rtg_fails + 1))
+    _rtg_open_tunnel 31000 "ReMake"       || _rtg_fails=$((_rtg_fails + 1))
+    _rtg_open_tunnel 32000 "FRAME"        || _rtg_fails=$((_rtg_fails + 1))
     _rtg_open_tunnel 40000 "GraspGen"      || _rtg_fails=$((_rtg_fails + 1))
     if [ "${_rtg_fails}" -ne 0 ]; then
         echo "[seraph_env] ⚠ ${_rtg_fails} tunnel(s) down — those clients will fail to connect."

@@ -1,0 +1,24 @@
+depth_restoration_node:
+  ros__parameters:
+    model: swindrnet  # swindrnet | remake | frame | raw
+    server_host: 127.0.0.1
+    swindrnet_url: ''  # empty uses server_host:30000/restore_depth
+    remake_url: ''     # empty uses server_host:31000/restore_depth
+    frame_url: '' # empty uses server_host:32000/restore_depth
+    http_timeout_s: 30.0
+    pair_slop_s: 0.05
+    input_timeout_s: 120.0
+    cache_size: 8
+    preserve_background: true
+    source_image_topic: /qwen/source_image
+    source_depth_topic: /qwen/source_depth
+    source_camera_info_topic: /qwen/source_camera_info
+    source_mask_topic: /sam/mask_image
+    source_detections_topic: /qwen/labeled_detections
+    output_depth_topic: /depth_restoration/depth_image
+    output_image_topic: /depth_restoration/source_image
+    output_camera_info_topic: /depth_restoration/camera_info
+    output_mask_topic: /depth_restoration/mask_image
+    output_detections_topic: /depth_restoration/labeled_detections
+    status_topic: /depth_restoration/status
+    slow_brain_status_topic: /slow_brain/status  # one line when a model run starts, one when it ends
